@@ -10,5 +10,8 @@ dependencies = [
     "playwright>=1.58.0",
 ]
 
+[tool.setuptools]
+py-modules = ["server"]
+
 [project.scripts]
 ukds-mcp = "server:mcp.run"
