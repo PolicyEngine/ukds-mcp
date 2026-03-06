@@ -6,6 +6,7 @@ on:
     paths:
       - "pyproject.toml"
       - "server.py"
+  workflow_dispatch:
 
 jobs:
   publish:
