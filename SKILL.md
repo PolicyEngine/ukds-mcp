@@ -7,13 +7,14 @@ MCP server that provides Claude with tools to search, access, and download datas
 - `server.py` — entire server implementation (single file, ~570 lines)
 - `pyproject.toml` — project config; entry point is `ukds-mcp = "server:mcp.run"`
 - `~/.config/ukds-mcp/session.json` — saved session cookies (created after login)
+- `UKDS_GRAPHQL_API_KEY` — required environment variable for catalogue search/metadata
 
 ## Architecture
 Two API surfaces:
-- **AppSync GraphQL** (`ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com`) — public catalogue search/metadata, API key auth
+- **AppSync GraphQL** (`ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com`) — public catalogue search/metadata, API key auth via `UKDS_GRAPHQL_API_KEY`
 - **Umbraco Surface REST** (`beta.ukdataservice.ac.uk/Umbraco/Surface/...`) — account/projects/downloads, session cookie auth
 
-Session cookies saved to `~/.config/ukds-mcp/session.json` after Playwright login.
+Session cookies are saved with owner-only permissions to `~/.config/ukds-mcp/session.json` after Playwright login.
 
 ## Tools
 - `login` — headless=False Playwright browser; auto-closes after redirect; shows banner
