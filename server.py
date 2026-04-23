@@ -32,7 +32,6 @@ from mcp.server.fastmcp import FastMCP
 
 BETA_BASE = "https://beta.ukdataservice.ac.uk"
 GRAPHQL_URL = "https://ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com/graphql"
-GRAPHQL_API_KEY = "da2-dbqlla2y3jf2vaqev4lcrpiq4a"
 SESSION_FILE = Path.home() / ".config" / "ukds-mcp" / "session.json"
 
 mcp = FastMCP("ukds")
@@ -44,13 +43,19 @@ mcp = FastMCP("ukds")
 
 def _load_session() -> dict[str, str]:
     if SESSION_FILE.exists():
+        SESSION_FILE.chmod(0o600)
         return json.loads(SESSION_FILE.read_text())
     return {}
 
 
 def _save_session(cookies: dict[str, str]) -> None:
-    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps(cookies, indent=2))
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    SESSION_FILE.parent.chmod(0o700)
+    fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(cookies, f, indent=2)
+        f.write("\n")
+    SESSION_FILE.chmod(0o600)
 
 
 def _make_client(cookies: dict[str, str] | None = None) -> httpx.Client:
@@ -79,11 +84,24 @@ def _check_auth(client: httpx.Client) -> bool:
 # GraphQL helper (catalogue — no login required)
 # ---------------------------------------------------------------------------
 
+def _graphql_api_key() -> str:
+    key = (
+        os.environ.get("UKDS_GRAPHQL_API_KEY")
+        or os.environ.get("GRAPHQL_API_KEY")
+        or ""
+    ).strip()
+    if not key:
+        raise RuntimeError(
+            "UKDS_GRAPHQL_API_KEY must be set to use the UKDS catalogue GraphQL API."
+        )
+    return key
+
+
 def _gql(query: str, variables: dict | None = None) -> dict:
     r = httpx.post(
         GRAPHQL_URL,
         headers={
-            "x-api-key": GRAPHQL_API_KEY,
+            "x-api-key": _graphql_api_key(),
             "Content-Type": "application/json",
         },
         json={"query": query, "variables": variables or {}},
