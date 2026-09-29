@@ -31,24 +31,26 @@ def catalogue_client(routes: dict[str, str]) -> httpx.Client:
 
 @pytest.fixture(autouse=True)
 def clean_state(monkeypatch):
-    for name in server.API_KEY_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv(server.API_KEY_ENV_VAR, raising=False)
+    monkeypatch.delenv("GRAPHQL_API_KEY", raising=False)
     monkeypatch.setattr(server, "_discovered_catalogue_api", None)
 
 
 class _Posts(list):
     rejected: set[str]
+    reject_status: int
 
 
 @pytest.fixture
 def posts(monkeypatch):
-    """Record GraphQL POSTs; answer 401 for any key in `rejected`, else 200."""
+    """Record GraphQL POSTs; answer `reject_status` for keys in `rejected`, else 200."""
     calls = _Posts()
     calls.rejected = set()
+    calls.reject_status = 401
 
     def fake_post(url, headers, json, timeout):
         calls.append((url, headers["x-api-key"]))
-        status = 401 if headers["x-api-key"] in calls.rejected else 200
+        status = calls.reject_status if headers["x-api-key"] in calls.rejected else 200
         return httpx.Response(status, json={"data": {"ok": True}}, request=httpx.Request("POST", url))
 
     monkeypatch.setattr(server.httpx, "post", fake_post)
@@ -91,6 +93,22 @@ def test_discovery_fails_loudly_when_the_site_changes(routes):
         server._discover_catalogue_api(catalogue_client(routes))
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://evil.example.com/graphql",
+        "http://abcdefghijklmnopqrstuvwxyz.appsync-api.eu-west-2.amazonaws.com/graphql",
+        "https://abcdefghijklmnopqrstuvwxyz.appsync-api.eu-west-2.amazonaws.com.evil.example/graphql",
+        "https://evil.example/x.appsync-api.eu-west-2.amazonaws.com/graphql",
+    ],
+)
+def test_discovery_only_accepts_appsync_endpoints(endpoint):
+    config = CONFIG_JS.replace(FAKE_ENDPOINT, endpoint)
+    client = catalogue_client({"/": INDEX_HTML, "/assets/index-tYcjTpRN.js": config})
+    with pytest.raises(RuntimeError):
+        server._discover_catalogue_api(client)
+
+
 def test_configured_key_wins_and_skips_discovery(monkeypatch, posts):
     monkeypatch.setenv("UKDS_GRAPHQL_API_KEY", "  configured-key  ")
     monkeypatch.setattr(server, "_discover_catalogue_api", lambda: pytest.fail("discovery ran"))
@@ -98,11 +116,12 @@ def test_configured_key_wins_and_skips_discovery(monkeypatch, posts):
     assert posts == [(server.GRAPHQL_URL, "configured-key")]
 
 
-def test_legacy_env_var_name_still_works(monkeypatch, posts):
-    monkeypatch.setenv("GRAPHQL_API_KEY", "legacy-key")
-    monkeypatch.setattr(server, "_discover_catalogue_api", lambda: pytest.fail("discovery ran"))
+def test_generic_graphql_api_key_is_never_sent_to_ukds(monkeypatch, posts):
+    # A GRAPHQL_API_KEY exported for some other service must not leak to UKDS.
+    monkeypatch.setenv("GRAPHQL_API_KEY", "someone-elses-secret")
+    monkeypatch.setattr(server, "_discover_catalogue_api", lambda: (FAKE_ENDPOINT, FAKE_KEY))
     server._gql("{ ok }")
-    assert posts == [(server.GRAPHQL_URL, "legacy-key")]
+    assert posts == [(FAKE_ENDPOINT, FAKE_KEY)]
 
 
 def test_discovered_key_is_cached(monkeypatch, posts):
@@ -117,10 +136,12 @@ def test_discovered_key_is_cached(monkeypatch, posts):
     assert posts == [(FAKE_ENDPOINT, FAKE_KEY)] * 2
 
 
-def test_rotated_key_is_rediscovered_once(monkeypatch, posts):
+@pytest.mark.parametrize("status", [401, 403])
+def test_rotated_key_is_rediscovered_once(monkeypatch, posts, status):
     keys = iter([FAKE_KEY, ROTATED_KEY])
     monkeypatch.setattr(server, "_discover_catalogue_api", lambda: (FAKE_ENDPOINT, next(keys)))
     posts.rejected.add(FAKE_KEY)
+    posts.reject_status = status
     assert server._gql("{ ok }") == {"data": {"ok": True}}
     assert posts == [(FAKE_ENDPOINT, FAKE_KEY), (FAKE_ENDPOINT, ROTATED_KEY)]
 
@@ -154,6 +175,33 @@ def test_session_is_saved_owner_only(monkeypatch, tmp_path):
     assert _mode(session_file) == 0o600
     assert _mode(session_file.parent) == 0o700
     assert server._load_session() == {"cookie": "value"}
+
+
+def test_existing_loose_session_dir_is_tightened(monkeypatch, tmp_path):
+    session_dir = tmp_path / "ukds-mcp"
+    session_dir.mkdir(mode=0o755)
+    os.chmod(session_dir, 0o755)
+    monkeypatch.setattr(server, "SESSION_FILE", session_dir / "session.json")
+    server._save_session({"cookie": "value"})
+    assert _mode(session_dir) == 0o700
+    assert _mode(session_dir / "session.json") == 0o600
+
+
+def test_loose_session_file_is_tightened_before_cookies_are_written(monkeypatch, tmp_path):
+    session_file = tmp_path / "session.json"
+    session_file.write_text("{}")
+    os.chmod(session_file, 0o644)
+    monkeypatch.setattr(server, "SESSION_FILE", session_file)
+    real_fdopen = os.fdopen
+    modes_at_write = []
+
+    def spy_fdopen(fd, *args, **kwargs):
+        modes_at_write.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(server.os, "fdopen", spy_fdopen)
+    server._save_session({"cookie": "value"})
+    assert modes_at_write == [0o600]
 
 
 def test_existing_session_file_is_tightened(monkeypatch, tmp_path):

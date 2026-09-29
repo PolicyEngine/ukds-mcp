@@ -34,7 +34,7 @@ from mcp.server.fastmcp import FastMCP
 BETA_BASE = "https://beta.ukdataservice.ac.uk"
 CATALOGUE_SITE = "https://datacatalogue.ukdataservice.ac.uk"
 GRAPHQL_URL = "https://ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com/graphql"
-API_KEY_ENV_VARS = ("UKDS_GRAPHQL_API_KEY", "GRAPHQL_API_KEY")
+API_KEY_ENV_VAR = "UKDS_GRAPHQL_API_KEY"
 SESSION_FILE = Path.home() / ".config" / "ukds-mcp" / "session.json"
 
 _ENTRY_SCRIPT_RE = re.compile(r'src="(/assets/index-[\w-]+\.js)"')
@@ -63,10 +63,12 @@ def _save_session(cookies: dict[str, str]) -> None:
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     SESSION_FILE.parent.chmod(0o700)
     fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # O_CREAT's mode only applies to new files; tighten an existing one
+    # before any cookie is written to it.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(cookies, f, indent=2)
         f.write("\n")
-    SESSION_FILE.chmod(0o600)
 
 
 def _make_client(cookies: dict[str, str] | None = None) -> httpx.Client:
@@ -96,11 +98,7 @@ def _check_auth(client: httpx.Client) -> bool:
 # ---------------------------------------------------------------------------
 
 def _configured_api_key() -> str | None:
-    for name in API_KEY_ENV_VARS:
-        key = os.environ.get(name, "").strip()
-        if key:
-            return key
-    return None
+    return os.environ.get(API_KEY_ENV_VAR, "").strip() or None
 
 
 def _discover_catalogue_api(client: httpx.Client | None = None) -> tuple[str, str]:

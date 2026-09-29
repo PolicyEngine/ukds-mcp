@@ -12,7 +12,7 @@ MCP server that provides Claude with tools to search, access, and download datas
 
 ## Architecture
 Two API surfaces:
-- **AppSync GraphQL** (`ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com`) — public catalogue search/metadata, API key auth. The key is UKDS's public web-client key. It isn't committed here: `_catalogue_api()` reads the endpoint and key from the Amplify config that `datacatalogue.ukdataservice.ac.uk` ships to browsers, caches them, and reads them again once if AppSync returns 401/403 (UKDS rotates the key). Setting `UKDS_GRAPHQL_API_KEY` (or `GRAPHQL_API_KEY`) skips discovery.
+- **AppSync GraphQL** (`ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com`) — public catalogue search/metadata, API key auth. The key is UKDS's public web-client key. It isn't committed here: `_catalogue_api()` reads the endpoint and key from the Amplify config that `datacatalogue.ukdataservice.ac.uk` ships to browsers, caches them, and reads them again once if AppSync returns 401/403 (UKDS rotates the key). Setting `UKDS_GRAPHQL_API_KEY` skips discovery.
 - **Umbraco Surface REST** (`beta.ukdataservice.ac.uk/Umbraco/Surface/...`) — account/projects/downloads, session cookie auth
 
 Session cookies are saved with owner-only permissions to `~/.config/ukds-mcp/session.json` after Playwright login.
