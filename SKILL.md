@@ -7,11 +7,12 @@ MCP server that provides Claude with tools to search, access, and download datas
 - `server.py` — entire server implementation (single file, ~570 lines)
 - `pyproject.toml` — project config; entry point is `ukds-mcp = "server:mcp.run"`
 - `~/.config/ukds-mcp/session.json` — saved session cookies (created after login)
-- `UKDS_GRAPHQL_API_KEY` — required environment variable for catalogue search/metadata
+- `UKDS_GRAPHQL_API_KEY` — optional override for the catalogue API key (see Architecture)
+- `tests/test_server.py` — pytest suite (`uv run pytest`); `UKDS_LIVE_TESTS=1` also hits the live site
 
 ## Architecture
 Two API surfaces:
-- **AppSync GraphQL** (`ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com`) — public catalogue search/metadata, API key auth via `UKDS_GRAPHQL_API_KEY`
+- **AppSync GraphQL** (`ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com`) — public catalogue search/metadata, API key auth. The key is UKDS's public web-client key. It isn't committed here: `_catalogue_api()` reads the endpoint and key from the Amplify config that `datacatalogue.ukdataservice.ac.uk` ships to browsers, caches them, and reads them again once if AppSync returns 401/403 (UKDS rotates the key). Setting `UKDS_GRAPHQL_API_KEY` (or `GRAPHQL_API_KEY`) skips discovery.
 - **Umbraco Surface REST** (`beta.ukdataservice.ac.uk/Umbraco/Surface/...`) — account/projects/downloads, session cookie auth
 
 Session cookies are saved with owner-only permissions to `~/.config/ukds-mcp/session.json` after Playwright login.

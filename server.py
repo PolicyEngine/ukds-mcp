@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,18 @@ from mcp.server.fastmcp import FastMCP
 # ---------------------------------------------------------------------------
 
 BETA_BASE = "https://beta.ukdataservice.ac.uk"
+CATALOGUE_SITE = "https://datacatalogue.ukdataservice.ac.uk"
 GRAPHQL_URL = "https://ohlhy6cg7nhwtpuer664aeok2i.appsync-api.eu-west-2.amazonaws.com/graphql"
+API_KEY_ENV_VARS = ("UKDS_GRAPHQL_API_KEY", "GRAPHQL_API_KEY")
 SESSION_FILE = Path.home() / ".config" / "ukds-mcp" / "session.json"
+
+_ENTRY_SCRIPT_RE = re.compile(r'src="(/assets/index-[\w-]+\.js)"')
+_CONFIG_CHUNK_RE = re.compile(r"amplifyconfig_prod-[\w-]+\.js")
+_APPSYNC_CONFIG_RE = re.compile(
+    r'endpoint:"(?P<endpoint>https://[\w-]+\.appsync-api\.[\w-]+\.amazonaws\.com/graphql)"'
+    r'[^}]*?apiKey:"(?P<key>da2-[a-z0-9]+)"'
+)
+_discovered_catalogue_api: tuple[str, str] | None = None
 
 mcp = FastMCP("ukds")
 
@@ -84,29 +95,83 @@ def _check_auth(client: httpx.Client) -> bool:
 # GraphQL helper (catalogue — no login required)
 # ---------------------------------------------------------------------------
 
-def _graphql_api_key() -> str:
-    key = (
-        os.environ.get("UKDS_GRAPHQL_API_KEY")
-        or os.environ.get("GRAPHQL_API_KEY")
-        or ""
-    ).strip()
-    if not key:
-        raise RuntimeError(
-            "UKDS_GRAPHQL_API_KEY must be set to use the UKDS catalogue GraphQL API."
-        )
-    return key
+def _configured_api_key() -> str | None:
+    for name in API_KEY_ENV_VARS:
+        key = os.environ.get(name, "").strip()
+        if key:
+            return key
+    return None
 
 
-def _gql(query: str, variables: dict | None = None) -> dict:
-    r = httpx.post(
-        GRAPHQL_URL,
-        headers={
-            "x-api-key": _graphql_api_key(),
-            "Content-Type": "application/json",
-        },
+def _discover_catalogue_api(client: httpx.Client | None = None) -> tuple[str, str]:
+    """Read the catalogue's GraphQL endpoint and API key from the public site.
+
+    The UKDS catalogue website ships its AppSync endpoint and public API key to
+    every browser in its Amplify config, and UKDS rotates that key. Reading it
+    from the site keeps the key out of this repository and follows rotations.
+    """
+    own_client = client is None
+    client = client or httpx.Client(
+        base_url=CATALOGUE_SITE, follow_redirects=True, timeout=15
+    )
+    try:
+        page = client.get("/")
+        page.raise_for_status()
+        entry = _ENTRY_SCRIPT_RE.search(page.text)
+        if not entry:
+            raise RuntimeError("catalogue page has no /assets/index-*.js entry script")
+        bundle = client.get(entry.group(1))
+        bundle.raise_for_status()
+        config = _APPSYNC_CONFIG_RE.search(bundle.text)
+        if not config:
+            chunk = _CONFIG_CHUNK_RE.search(bundle.text)
+            if not chunk:
+                raise RuntimeError("catalogue bundle has no Amplify config chunk")
+            chunk_js = client.get(f"/assets/{chunk.group(0)}")
+            chunk_js.raise_for_status()
+            config = _APPSYNC_CONFIG_RE.search(chunk_js.text)
+        if not config:
+            raise RuntimeError("catalogue Amplify config has no AppSync apiKey")
+        return config["endpoint"], config["key"]
+    finally:
+        if own_client:
+            client.close()
+
+
+def _catalogue_api(refresh: bool = False) -> tuple[str, str]:
+    global _discovered_catalogue_api
+    if refresh or _discovered_catalogue_api is None:
+        try:
+            _discovered_catalogue_api = _discover_catalogue_api()
+        except (httpx.HTTPError, RuntimeError) as e:
+            raise RuntimeError(
+                f"Could not read the UKDS catalogue's public GraphQL key from "
+                f"{CATALOGUE_SITE} ({e}). Set UKDS_GRAPHQL_API_KEY to the apiKey "
+                f"in that site's Amplify config."
+            ) from e
+    return _discovered_catalogue_api
+
+
+def _post_gql(url: str, key: str, query: str, variables: dict | None) -> httpx.Response:
+    return httpx.post(
+        url,
+        headers={"x-api-key": key, "Content-Type": "application/json"},
         json={"query": query, "variables": variables or {}},
         timeout=15,
     )
+
+
+def _gql(query: str, variables: dict | None = None) -> dict:
+    key = _configured_api_key()
+    if key:
+        r = _post_gql(GRAPHQL_URL, key, query, variables)
+    else:
+        url, key = _catalogue_api()
+        r = _post_gql(url, key, query, variables)
+        if r.status_code in (401, 403):
+            # UKDS rotated the key since it was read; read it again once.
+            url, key = _catalogue_api(refresh=True)
+            r = _post_gql(url, key, query, variables)
     r.raise_for_status()
     return r.json()
 
